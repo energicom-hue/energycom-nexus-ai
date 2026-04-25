@@ -21,6 +21,13 @@ type Result = {
   factorPlant: number;
   annualMWh: number;
   capexEquipment: number;
+  connectionCost: number;
+  devexTotal: number;
+  devexFactibility: number;
+  devexEngineering: number;
+  devexPermits: number;
+  devexGridStudies: number;
+  devexManagement: number;
   capexTotal: number;
   opexAnnual: number;
   revenueAnnual: number;
@@ -31,7 +38,6 @@ type Result = {
   payback: number;
   riskScore: number;
   riskLevel: string;
-  connectionCost: number;
   adjustedGhi: number;
   adjustedWind: number;
   crf: number;
@@ -83,6 +89,14 @@ const assumptions = {
   discountRate: 0.1,
   solarDegradation: 0.005,
   capitalRecoveryFactor: 0.085,
+  devexDefaultPct: 0.07,
+  devexBreakdown: {
+    factibility: 0.22,
+    engineering: 0.28,
+    permits: 0.16,
+    gridStudies: 0.14,
+    management: 0.20,
+  },
 };
 
 function usd(v: number) {
@@ -129,7 +143,7 @@ function getAdjustedResource(zone: Zone, lat: number, lon: number) {
   return { adjustedGhi, adjustedWind };
 }
 
-function calculate(zone: Zone, technology: string, areaHa: number, price: number, lat: number, lon: number): Result {
+function calculate(zone: Zone, technology: string, areaHa: number, price: number, lat: number, lon: number, devexPct: number): Result {
   const isSolar = technology === "solar";
   const { adjustedGhi, adjustedWind } = getAdjustedResource(zone, lat, lon);
   const mwPerHa = isSolar ? assumptions.solarMwHa : assumptions.windMwHa;
@@ -142,7 +156,14 @@ function calculate(zone: Zone, technology: string, areaHa: number, price: number
   const annualMWh = capacityMW * factorPlant * 8760;
   const connectionCost = zone.grid * assumptions.connectionUsdKm;
   const capexEquipment = capacityMW * capexUnit;
-  const capexTotal = capexEquipment + connectionCost;
+  const devexBase = capexEquipment + connectionCost;
+  const devexTotal = devexBase * (devexPct / 100);
+  const devexFactibility = devexTotal * assumptions.devexBreakdown.factibility;
+  const devexEngineering = devexTotal * assumptions.devexBreakdown.engineering;
+  const devexPermits = devexTotal * assumptions.devexBreakdown.permits;
+  const devexGridStudies = devexTotal * assumptions.devexBreakdown.gridStudies;
+  const devexManagement = devexTotal * assumptions.devexBreakdown.management;
+  const capexTotal = capexEquipment + connectionCost + devexTotal;
   const opexAnnual = capexTotal * opexPct;
   const revenueAnnual = annualMWh * price;
   const ebitda = revenueAnnual - opexAnnual;
@@ -165,7 +186,7 @@ function calculate(zone: Zone, technology: string, areaHa: number, price: number
   const climateScore = Math.max(0, 100 - zone.climate);
   const riskScore = Math.max(0, Math.min(100, resourceScore * 0.25 + financeScore * 0.3 + gridScore * 0.2 + legalScore * 0.15 + climateScore * 0.1));
   const riskLevel = riskScore >= 70 ? "bajo" : riskScore >= 45 ? "medio" : "alto";
-  return { capacityMW, factorPlant, annualMWh, capexEquipment, capexTotal, opexAnnual, revenueAnnual, ebitda, lcoe, npv: projectNpv, irr, payback, riskScore, riskLevel, connectionCost, adjustedGhi, adjustedWind, crf, resourceScore, financeScore, gridScore, legalScore, climateScore, cashflows };
+  return { capacityMW, factorPlant, annualMWh, capexEquipment, connectionCost, devexTotal, devexFactibility, devexEngineering, devexPermits, devexGridStudies, devexManagement, capexTotal, opexAnnual, revenueAnnual, ebitda, lcoe, npv: projectNpv, irr, payback, riskScore, riskLevel, adjustedGhi, adjustedWind, crf, resourceScore, financeScore, gridScore, legalScore, climateScore, cashflows };
 }
 
 function Card({ title, value, subtitle, icon: Icon }: any) {
@@ -198,13 +219,14 @@ export default function Home() {
   const [technology, setTechnology] = useState("solar");
   const [areaHa, setAreaHa] = useState(120);
   const [price, setPrice] = useState(42);
+  const [devexPct, setDevexPct] = useState(7);
   const [zone, setZone] = useState<Zone>(zones.find((z) => z.region === "Arequipa") || zones[0]);
   const [lat, setLat] = useState(-16.41);
   const [lon, setLon] = useState(-71.54);
   const [result, setResult] = useState<Result | null>(null);
   const [message, setMessage] = useState("Selecciona una región, coordenadas y ejecuta el análisis.");
 
-  const liveEstimate = useMemo(() => calculate(zone, technology, areaHa, price, lat, lon), [zone, technology, areaHa, price, lat, lon]);
+  const liveEstimate = useMemo(() => calculate(zone, technology, areaHa, price, lat, lon, devexPct), [zone, technology, areaHa, price, lat, lon, devexPct]);
 
   function selectZone(region: string) {
     const selected = zones.find((z) => z.region === region) || zones[0];
@@ -227,7 +249,7 @@ export default function Home() {
   }
 
   function analyze() {
-    const calculated = calculate(zone, technology, areaHa, price, lat, lon);
+    const calculated = calculate(zone, technology, areaHa, price, lat, lon, devexPct);
     setResult(calculated);
     setMessage(`Análisis generado para ${zone.region} (${lat.toFixed(5)}, ${lon.toFixed(5)}).`);
     setTimeout(() => document.getElementById("resultados")?.scrollIntoView({ behavior: "smooth" }), 100);
@@ -247,8 +269,9 @@ export default function Home() {
   const resourceUnit = technology === "solar" ? "kWh/m²/día" : "m/s";
 
   function scenario(priceMult: number, capexMult: number, fpMult: number) {
-    const base = calculate(zone, technology, areaHa, price * priceMult, lat, lon);
-    const adjustedCapex = base.capexEquipment * capexMult + base.connectionCost;
+    const base = calculate(zone, technology, areaHa, price * priceMult, lat, lon, devexPct);
+    const adjustedDevex = (base.capexEquipment * capexMult + base.connectionCost) * (devexPct / 100);
+    const adjustedCapex = base.capexEquipment * capexMult + base.connectionCost + adjustedDevex;
     const adjustedMWh = base.annualMWh * fpMult;
     const adjustedOpex = adjustedCapex * opexPct;
     const cashflows = [-adjustedCapex];
@@ -274,7 +297,7 @@ export default function Home() {
             <div className="h-11 w-11 rounded-2xl bg-emerald-600 flex items-center justify-center"><Zap className="text-white" /></div>
             <div>
               <h1 className="text-2xl font-bold">Energycom Nexus AI</h1>
-              <p className="text-sm text-slate-500">From Land to Power · MVP Perú · Coordenadas + memoria de cálculo</p>
+              <p className="text-sm text-slate-500">From Land to Power · MVP Perú · Coordenadas + DevEx + memoria de cálculo</p>
             </div>
           </div>
           <button className="rounded-2xl bg-slate-900 text-white px-4 py-2 text-sm">Solicitar demo</button>
@@ -335,6 +358,11 @@ export default function Home() {
                 <label className="font-medium">Precio energía: ${price}/MWh</label>
                 <input className="w-full mt-2" type="range" min="25" max="90" value={price} onChange={(e) => { setPrice(Number(e.target.value)); setResult(null); }} />
               </div>
+              <div>
+                <label className="font-medium">Costos de desarrollo (DevEx): {devexPct}% del CAPEX EPC + conexión</label>
+                <input className="w-full mt-2" type="range" min="3" max="15" value={devexPct} onChange={(e) => { setDevexPct(Number(e.target.value)); setResult(null); }} />
+                <p className="text-xs text-slate-500 mt-1">Incluye factibilidad, ingeniería, permisos, estudios de interconexión y gestión/desarrollo.</p>
+              </div>
               <div className="rounded-2xl bg-slate-50 border p-4 text-sm">
                 Estimación previa: <strong>{num(liveEstimate.capacityMW)} MW</strong> · <strong>{num(liveEstimate.annualMWh, 0)} MWh/año</strong> · CAPEX <strong>{usd(liveEstimate.capexTotal)}</strong><br />
                 {resourceLabel}: <strong>{resourceValue.toFixed(2)} {resourceUnit}</strong>
@@ -365,12 +393,13 @@ export default function Home() {
           <div className="grid md:grid-cols-4 gap-4">
             <Card icon={Zap} title="Capacidad" value={`${num(result.capacityMW)} MW`} subtitle="estimada" />
             <Card icon={Sun} title="Producción" value={`${num(result.annualMWh, 0)} MWh/año`} subtitle={`FP ${(result.factorPlant * 100).toFixed(1)}%`} />
-            <Card icon={DollarSign} title="CAPEX" value={usd(result.capexTotal)} subtitle={`conexión ${usd(result.connectionCost)}`} />
+            <Card icon={DollarSign} title="CAPEX total" value={usd(result.capexTotal)} subtitle={`incluye DevEx ${usd(result.devexTotal)}`} />
             <Card icon={AlertTriangle} title="Riesgo" value={`${result.riskScore.toFixed(0)}/100`} subtitle={`nivel ${result.riskLevel}`} />
           </div>
           <div className="grid md:grid-cols-4 gap-4">
             <Card icon={DollarSign} title="Ingresos" value={usd(result.revenueAnnual)} subtitle="anual estimado" />
             <Card icon={Building2} title="OPEX" value={usd(result.opexAnnual)} subtitle="anual estimado" />
+            <Card icon={Scale} title="DevEx" value={usd(result.devexTotal)} subtitle={`${devexPct}% del EPC + conexión`} />
             <Card icon={FileText} title="LCOE" value={`$${result.lcoe.toFixed(1)}/MWh`} subtitle="estimado" />
             <Card icon={Landmark} title="VAN" value={usd(result.npv)} subtitle="10% descuento" />
           </div>
@@ -395,7 +424,8 @@ export default function Home() {
                   <DetailRow label="Producción anual" formula="E = P_inst × FP × 8,760" calculation={`${num(result.capacityMW)} × ${(result.factorPlant * 100).toFixed(2)}% × 8,760`} result={`${num(result.annualMWh, 0)} MWh/año`} />
                   <DetailRow label="CAPEX equipos/EPC" formula="CAPEX_EPC = P_inst × CAPEX_unitario" calculation={`${num(result.capacityMW)} MW × ${usdFull(capexUnit)}/MW`} result={usdFull(result.capexEquipment)} />
                   <DetailRow label="Costo de conexión" formula="C_conexión = distancia × USD/km" calculation={`${zone.grid} km × ${usdFull(assumptions.connectionUsdKm)}/km`} result={usdFull(result.connectionCost)} />
-                  <DetailRow label="CAPEX total" formula="CAPEX_total = CAPEX_EPC + C_conexión" calculation={`${usdFull(result.capexEquipment)} + ${usdFull(result.connectionCost)}`} result={usdFull(result.capexTotal)} />
+                  <DetailRow label="Costos de desarrollo (DevEx)" formula="DevEx = (CAPEX_EPC + C_conexión) × %DevEx" calculation={`(${usdFull(result.capexEquipment)} + ${usdFull(result.connectionCost)}) × ${devexPct}%`} result={usdFull(result.devexTotal)} />
+                  <DetailRow label="CAPEX total" formula="CAPEX_total = CAPEX_EPC + C_conexión + DevEx" calculation={`${usdFull(result.capexEquipment)} + ${usdFull(result.connectionCost)} + ${usdFull(result.devexTotal)}`} result={usdFull(result.capexTotal)} />
                   <DetailRow label="OPEX anual" formula="OPEX = CAPEX_total × %OPEX" calculation={`${usdFull(result.capexTotal)} × ${(opexPct * 100).toFixed(1)}%`} result={usdFull(result.opexAnnual)} />
                   <DetailRow label="Ingresos anuales" formula="Ingresos = E × Precio" calculation={`${num(result.annualMWh, 0)} MWh × $${price}/MWh`} result={usdFull(result.revenueAnnual)} />
                   <DetailRow label="EBITDA preliminar" formula="EBITDA = Ingresos - OPEX" calculation={`${usdFull(result.revenueAnnual)} - ${usdFull(result.opexAnnual)}`} result={usdFull(result.ebitda)} />
@@ -403,6 +433,24 @@ export default function Home() {
                   <DetailRow label="VAN" formula="VAN = Σ FCt/(1+r)^t" calculation={`r = ${(assumptions.discountRate * 100).toFixed(1)}%, vida = ${assumptions.lifeYears} años`} result={usdFull(result.npv)} />
                   <DetailRow label="TIR" formula="TIR = tasa donde VAN = 0" calculation="Iteración sobre flujos de caja del proyecto" result={`${result.irr.toFixed(2)}%`} />
                   <DetailRow label="Payback simple" formula="Payback = CAPEX_total / EBITDA" calculation={`${usdFull(result.capexTotal)} / ${usdFull(result.ebitda)}`} result={`${result.payback.toFixed(2)} años`} />
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="rounded-3xl bg-white p-6 shadow-sm border border-slate-200">
+            <h3 className="text-xl font-bold mb-4">Costos de desarrollo del proyecto (DevEx)</h3>
+            <p className="text-sm text-slate-600 mb-4">Estos costos representan la inversión necesaria antes de la construcción para llevar el proyecto desde prefactibilidad hasta una etapa lista para financiamiento, permisos e ingeniería.</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-100"><tr><th className="p-3 text-left">Componente</th><th className="p-3 text-left">Alcance considerado</th><th className="p-3 text-right">USD</th><th className="p-3 text-right">% DevEx</th></tr></thead>
+                <tbody>
+                  <tr className="border-b"><td className="p-3 font-medium">Factibilidad</td><td className="p-3">Prefactibilidad, factibilidad, recurso, visitas, topografía/geotecnia preliminar</td><td className="p-3 text-right">{usdFull(result.devexFactibility)}</td><td className="p-3 text-right">22%</td></tr>
+                  <tr className="border-b"><td className="p-3 font-medium">Ingeniería</td><td className="p-3">Ingeniería conceptual, básica/FEED y soporte para ingeniería de detalle</td><td className="p-3 text-right">{usdFull(result.devexEngineering)}</td><td className="p-3 text-right">28%</td></tr>
+                  <tr className="border-b"><td className="p-3 font-medium">Permisos y legal</td><td className="p-3">Permisos sectoriales, saneamiento, contratos, servidumbres y soporte regulatorio</td><td className="p-3 text-right">{usdFull(result.devexPermits)}</td><td className="p-3 text-right">16%</td></tr>
+                  <tr className="border-b"><td className="p-3 font-medium">Interconexión - estudios</td><td className="p-3">Estudios de conexión, impacto al sistema y gestión ante operador de red</td><td className="p-3 text-right">{usdFull(result.devexGridStudies)}</td><td className="p-3 text-right">14%</td></tr>
+                  <tr className="border-b"><td className="p-3 font-medium">Gestión/desarrollo</td><td className="p-3">Project management, desarrollo comercial, negociación PPA y estructuración financiera</td><td className="p-3 text-right">{usdFull(result.devexManagement)}</td><td className="p-3 text-right">20%</td></tr>
+                  <tr className="bg-slate-50 font-bold"><td className="p-3">Total DevEx</td><td className="p-3">{devexPct}% sobre CAPEX EPC + conexión</td><td className="p-3 text-right">{usdFull(result.devexTotal)}</td><td className="p-3 text-right">100%</td></tr>
                 </tbody>
               </table>
             </div>
@@ -419,6 +467,7 @@ export default function Home() {
                 <li>Vida útil: {assumptions.lifeYears} años.</li>
                 <li>Tasa de descuento: {(assumptions.discountRate * 100).toFixed(1)}%.</li>
                 <li>Costo preliminar de conexión: {usdFull(assumptions.connectionUsdKm)}/km.</li>
+                <li>DevEx considerado: {devexPct}% del CAPEX EPC + conexión.</li>
                 <li>Degradación solar anual: {(assumptions.solarDegradation * 100).toFixed(1)}%; eólico sin degradación en MVP.</li>
                 <li>Coordenadas usadas: {lat.toFixed(5)}, {lon.toFixed(5)}.</li>
               </ul>
@@ -451,7 +500,7 @@ export default function Home() {
           <div className="rounded-3xl bg-white p-6 shadow-sm border border-slate-200">
             <h3 className="text-xl font-bold">Conclusión preliminar</h3>
             <p className="mt-3 text-slate-700">
-              El terreno evaluado presenta un nivel de riesgo preliminar <strong>{result.riskLevel}</strong> para un proyecto {techName}. La oportunidad debe continuar a validación con recurso horario, visita de campo, cotización EPC, análisis de conexión, revisión de propiedad, concesiones, servidumbres, permisos y evaluación ambiental.
+              El terreno evaluado presenta un nivel de riesgo preliminar <strong>{result.riskLevel}</strong> para un proyecto {techName}. La oportunidad debe continuar a validación con recurso horario, visita de campo, cotización EPC, análisis de conexión, revisión de propiedad, concesiones, servidumbres, permisos, evaluación ambiental y presupuesto DevEx detallado por etapa.
             </p>
           </div>
 
