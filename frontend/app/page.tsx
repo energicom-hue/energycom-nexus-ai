@@ -198,7 +198,7 @@ function getAdjustedResource(zone: Zone, lat: number, lon: number) {
   return { adjustedGhi, adjustedWind };
 }
 
-function calculate(zone: Zone, technology: string, areaHa: number, price: number, lat: number, lon: number, devexPct: number): Result {
+  function calculate(zone, technology, areaHa, price, lat, lon, devexPct, ghiReal, windSpeedReal, solarCF, windCF) {
   const isSolar = technology === "solar";
   const { adjustedGhi, adjustedWind } = getAdjustedResource(zone, lat, lon);
   const mwPerHa = isSolar ? assumptions.solarMwHa : assumptions.windMwHa;
@@ -308,13 +308,36 @@ export default function Home() {
     setResult(null);
   }
 
-  function analyze() {
-    const calculated = calculate(zone, technology, areaHa, price, lat, lon, devexPct);
-    setResult(calculated);
-    setMessage(`Análisis generado para ${zone.region} (${lat.toFixed(5)}, ${lon.toFixed(5)}).`);
-    setTimeout(() => document.getElementById("resultados")?.scrollIntoView({ behavior: "smooth" }), 100);
-  }
+  async function analyze() {
 
+  // 🔌 1. DATOS REALES
+  const nasaData = await getNASAResourceData(lat, lon);
+  const ghiReal = nasaData.ghi;
+
+  const windSpeedReal = estimateWindSpeedPeru(lat, lon);
+
+  const solarCF = getSolarCapacityFactor(ghiReal);
+  const windCF = getWindCapacityFactor(windSpeedReal);
+
+  // ⚙️ 2. CÁLCULO ORIGINAL
+  const calculated = calculate(zone, technology, areaHa, price, lat, lon, devexPct);
+
+  // 🔥 3. SOBREESCRIBIR RESULTADOS (CLAVE)
+  calculated.ghi = ghiReal;
+  calculated.windSpeed = windSpeedReal;
+  calculated.factorPlant =
+    technology === "solar" ? solarCF : windCF;
+
+  // 💾 4. GUARDAR RESULTADO
+  setResult(calculated);
+
+  setMessage(`Análisis generado para ${zone.region} (${lat.toFixed(5)}, ${lon.toFixed(5)}).`);
+
+  setTimeout(() =>
+    document.getElementById("resultados")?.scrollIntoView({ behavior: "smooth" }),
+    100
+  );
+}
   function printReport() {
     if (!result) analyze();
     setTimeout(() => window.print(), 200);
