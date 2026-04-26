@@ -1,42 +1,21 @@
-async function getNASAResourceData(lat, lon) {
-  const url =
-    `https://power.larc.nasa.gov/api/temporal/climatology/point` +
-    `?parameters=ALLSKY_SFC_SW_DWN` +
-    `&community=RE` +
-    `&longitude=${lon}` +
-    `&latitude=${lat}` +
-    `&format=JSON`;
-
-  const response = await fetch(url);
-
-  if (!response.ok) {
-    throw new Error("No se pudo obtener información de NASA POWER");
-  }
-
-  const data = await response.json();
-
-  const ghi =
-    data?.properties?.parameter?.ALLSKY_SFC_SW_DWN?.ANN ||
-    data?.properties?.parameter?.ALLSKY_SFC_SW_DWN?.annual;
-
-  return {
-    ghi: Number(ghi),
-    source: "NASA POWER - ALLSKY_SFC_SW_DWN",
-  };
-}
-function estimateWindSpeedPeru(lat, lon) {
-  // Modelo preliminar para MVP Perú.
-  // Luego será reemplazado por Global Wind Atlas vía backend GIS.
-
-  if (lat > -7) return 7.4;      // norte: Piura, Lambayeque
-  if (lat > -12) return 6.3;     // centro
-  if (lat > -16) return 6.0;     // sur medio
-  return 6.4;                    // sur: Arequipa, Moquegua, Tacna
-}
 "use client";
 
 import { useMemo, useState } from "react";
-import { AlertTriangle, Building2, DollarSign, Download, FileText, Globe2, Landmark, MapPin, Scale, Sun, Users, Wind, Zap } from "lucide-react";
+import {
+  AlertTriangle,
+  Building2,
+  DollarSign,
+  Download,
+  FileText,
+  Globe2,
+  Landmark,
+  MapPin,
+  Scale,
+  Sun,
+  Users,
+  Wind,
+  Zap,
+} from "lucide-react";
 
 type Zone = {
   region: string;
@@ -62,6 +41,7 @@ type Result = {
   interconnectionCapex: number;
   technicalCapex: number;
   connectionCost: number;
+  gridDistance: number;
   devexTotal: number;
   devexFactibility: number;
   devexEngineering: number;
@@ -87,7 +67,61 @@ type Result = {
   legalScore: number;
   climateScore: number;
   cashflows: number[];
+  dataSource: string;
 };
+
+type NASAResourceData = {
+  ghi: number;
+  source: string;
+};
+
+async function getNASAResourceData(lat: number, lon: number): Promise<NASAResourceData> {
+  const url =
+    `https://power.larc.nasa.gov/api/temporal/climatology/point` +
+    `?parameters=ALLSKY_SFC_SW_DWN` +
+    `&community=RE` +
+    `&longitude=${lon}` +
+    `&latitude=${lat}` +
+    `&format=JSON`;
+
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error("No se pudo obtener información de NASA POWER");
+  }
+
+  const data = await response.json();
+
+  const ghi =
+    data?.properties?.parameter?.ALLSKY_SFC_SW_DWN?.ANN ??
+    data?.properties?.parameter?.ALLSKY_SFC_SW_DWN?.annual;
+
+  if (!Number.isFinite(Number(ghi))) {
+    throw new Error("NASA POWER no devolvió un valor GHI válido");
+  }
+
+  return {
+    ghi: Number(ghi),
+    source: "NASA POWER - ALLSKY_SFC_SW_DWN",
+  };
+}
+
+function estimateWindSpeedPeru(lat: number, _lon: number) {
+  // Modelo preliminar para MVP Perú.
+  // En fase backend se reemplaza por Global Wind Atlas / GIS raster por coordenadas.
+  if (lat > -7) return 7.4; // norte: Piura, Tumbes, Lambayeque
+  if (lat > -12) return 6.3; // centro
+  if (lat > -16) return 6.0; // sur medio
+  return 6.4; // sur: Arequipa, Moquegua, Tacna
+}
+
+function getSolarCapacityFactor(ghi: number) {
+  return Math.min(0.30, Math.max(0.18, ghi / 24));
+}
+
+function getWindCapacityFactor(windSpeed: number) {
+  return Math.min(0.45, Math.max(0.20, (windSpeed - 3) / 10));
+}
 
 const zones: Zone[] = [
   { region: "Amazonas", macro: "Nororiente", ghi: 4.7, wind: 4.1, grid: 38, legal: 42, climate: 48, lat: -6.23, lon: -77.87, note: "Zona con recurso solar medio y alta sensibilidad ambiental." },
@@ -129,7 +163,6 @@ const assumptions = {
   lifeYears: 25,
   discountRate: 0.1,
   solarDegradation: 0.005,
-  capitalRecoveryFactor: 0.085,
   devexDefaultPct: 0.07,
   devexBreakdown: {
     factibility: 0.22,
@@ -198,7 +231,25 @@ function getAdjustedResource(zone: Zone, lat: number, lon: number) {
   return { adjustedGhi, adjustedWind };
 }
 
-  function calculate(zone: Zone, technology: string, areaHa: number, price: number, lat: number, lon: number, devexPct: number, ghiReal?: number, windSpeedReal?: number, solarCF?: number, windCF?: number): Result {
+function staticMapUrl(lat: number, lon: number) {
+  return `https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lon}&zoom=7&size=640x320&markers=${lat},${lon},red-pushpin`;
+}
+
+function calculate(
+  zone: Zone,
+  technology: string,
+  areaHa: number,
+  price: number,
+  lat: number,
+  lon: number,
+  devexPct: number,
+  gridDistance: number,
+  ghiReal?: number,
+  windSpeedReal?: number,
+  solarCF?: number,
+  windCF?: number,
+  dataSource = "Estimación regional MVP"
+): Result {
   const isSolar = technology === "solar";
   const estimatedResource = getAdjustedResource(zone, lat, lon);
   const adjustedGhi = ghiReal ?? estimatedResource.adjustedGhi;
@@ -208,10 +259,11 @@ function getAdjustedResource(zone: Zone, lat: number, lon: number) {
   const opexPct = isSolar ? assumptions.solarOpex : assumptions.windOpex;
   const capacityMW = areaHa * mwPerHa;
   const factorPlant = isSolar
-  ? (solarCF ?? Math.min(0.31, Math.max(0.17, adjustedGhi / 24)))
-  : (windCF ?? Math.min(0.46, Math.max(0.18, (adjustedWind - 3) / 10)));
+    ? (solarCF ?? Math.min(0.31, Math.max(0.17, adjustedGhi / 24)))
+    : (windCF ?? Math.min(0.46, Math.max(0.18, (adjustedWind - 3) / 10)));
   const annualMWh = capacityMW * factorPlant * 8760;
-  const lineCost = zone.grid * assumptions.connectionUsdKm;
+  const distance = Math.max(0, gridDistance);
+  const lineCost = distance * assumptions.connectionUsdKm;
   const substationCost = estimateSubstationCost(capacityMW);
   const electricalEquipmentCost = (lineCost + substationCost) * assumptions.electricalEquipmentPct;
   const interconnectionCapex = lineCost + substationCost + electricalEquipmentCost;
@@ -243,12 +295,51 @@ function getAdjustedResource(zone: Zone, lat: number, lon: number) {
   const payback = capexTotal / Math.max(1, ebitda);
   const resourceScore = isSolar ? Math.min(100, adjustedGhi * 15) : Math.min(100, adjustedWind * 12);
   const financeScore = Math.max(0, Math.min(100, (irr - 4) * 8));
-  const gridScore = Math.max(0, 100 - zone.grid * 2.2);
+  const gridScore = Math.max(0, 100 - distance * 2.2);
   const legalScore = Math.max(0, 100 - zone.legal);
   const climateScore = Math.max(0, 100 - zone.climate);
   const riskScore = Math.max(0, Math.min(100, resourceScore * 0.25 + financeScore * 0.3 + gridScore * 0.2 + legalScore * 0.15 + climateScore * 0.1));
   const riskLevel = riskScore >= 70 ? "bajo" : riskScore >= 45 ? "medio" : "alto";
-  return { capacityMW, factorPlant, annualMWh, capexEquipment, lineCost, substationCost, electricalEquipmentCost, interconnectionCapex, technicalCapex, connectionCost, devexTotal, devexFactibility, devexEngineering, devexPermits, devexGridStudies, devexManagement, capexTotal, opexAnnual, revenueAnnual, ebitda, lcoe, npv: projectNpv, irr, payback, riskScore, riskLevel, adjustedGhi, adjustedWind, crf, resourceScore, financeScore, gridScore, legalScore, climateScore, cashflows };
+
+  return {
+    capacityMW,
+    factorPlant,
+    annualMWh,
+    capexEquipment,
+    lineCost,
+    substationCost,
+    electricalEquipmentCost,
+    interconnectionCapex,
+    technicalCapex,
+    connectionCost,
+    gridDistance: distance,
+    devexTotal,
+    devexFactibility,
+    devexEngineering,
+    devexPermits,
+    devexGridStudies,
+    devexManagement,
+    capexTotal,
+    opexAnnual,
+    revenueAnnual,
+    ebitda,
+    lcoe,
+    npv: projectNpv,
+    irr,
+    payback,
+    riskScore,
+    riskLevel,
+    adjustedGhi,
+    adjustedWind,
+    crf,
+    resourceScore,
+    financeScore,
+    gridScore,
+    legalScore,
+    climateScore,
+    cashflows,
+    dataSource,
+  };
 }
 
 function Card({ title, value, subtitle, icon: Icon }: any) {
@@ -285,16 +376,31 @@ export default function Home() {
   const [zone, setZone] = useState<Zone>(zones.find((z) => z.region === "Arequipa") || zones[0]);
   const [lat, setLat] = useState(-16.41);
   const [lon, setLon] = useState(-71.54);
+  const [gridDistance, setGridDistance] = useState(18);
   const [result, setResult] = useState<Result | null>(null);
-  const [message, setMessage] = useState("Selecciona una región, coordenadas y ejecuta el análisis.");
+  const [message, setMessage] = useState("Selecciona una región, coordenadas, distancia a red y ejecuta el análisis.");
+  const [loading, setLoading] = useState(false);
 
-  const liveEstimate = useMemo(() => calculate(zone, technology, areaHa, price, lat, lon, devexPct), [zone, technology, areaHa, price, lat, lon, devexPct]);
+  const liveEstimate = useMemo(
+    () => calculate(zone, technology, areaHa, price, lat, lon, devexPct, gridDistance),
+    [zone, technology, areaHa, price, lat, lon, devexPct, gridDistance]
+  );
+
+  const locationLabel = `Coordenadas ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  const techName = technology === "solar" ? "Solar FV" : "Eólico";
+  const capexUnit = technology === "solar" ? assumptions.solarCapex : assumptions.windCapex;
+  const opexPct = technology === "solar" ? assumptions.solarOpex : assumptions.windOpex;
+  const mwHa = technology === "solar" ? assumptions.solarMwHa : assumptions.windMwHa;
+  const resourceValue = result ? (technology === "solar" ? result.adjustedGhi : result.adjustedWind) : (technology === "solar" ? liveEstimate.adjustedGhi : liveEstimate.adjustedWind);
+  const resourceLabel = technology === "solar" ? "GHI" : "Viento";
+  const resourceUnit = technology === "solar" ? "kWh/m²/día" : "m/s";
 
   function selectZone(region: string) {
     const selected = zones.find((z) => z.region === region) || zones[0];
     setZone(selected);
     setLat(selected.lat);
     setLon(selected.lon);
+    setGridDistance(selected.grid);
     setResult(null);
   }
 
@@ -311,47 +417,54 @@ export default function Home() {
   }
 
   async function analyze() {
-  const nasaData = await getNASAResourceData(lat, lon);
-  const ghiReal = nasaData.ghi;
+    setLoading(true);
+    try {
+      const nasaData = await getNASAResourceData(lat, lon);
+      const ghiReal = nasaData.ghi;
+      const windSpeedReal = estimateWindSpeedPeru(lat, lon);
+      const solarCF = getSolarCapacityFactor(ghiReal);
+      const windCF = getWindCapacityFactor(windSpeedReal);
 
-  const windSpeedReal = estimateWindSpeedPeru(lat, lon);
+      const calculated = calculate(
+        zone,
+        technology,
+        areaHa,
+        price,
+        lat,
+        lon,
+        devexPct,
+        gridDistance,
+        ghiReal,
+        windSpeedReal,
+        solarCF,
+        windCF,
+        "Solar: NASA POWER - ALLSKY_SFC_SW_DWN / Eólico: estimación regional MVP Perú"
+      );
 
-  const solarCF = getSolarCapacityFactor(ghiReal);
-  const windCF = getWindCapacityFactor(windSpeedReal);
-
-  const calculated = calculate(
-    zone,
-    technology,
-    areaHa,
-    price,
-    lat,
-    lon,
-    devexPct,
-    ghiReal,
-    windSpeedReal,
-    solarCF,
-    windCF
-  );
-
-  setResult(calculated);
-  setMessage(`Análisis generado con NASA POWER para ${locationLabel} (${lat.toFixed(5)}, ${lon.toFixed(5)}).`);
-  setTimeout(() => document.getElementById("resultados")?.scrollIntoView({ behavior: "smooth" }), 100);
-}
-  function printReport() {
-    if (!result) analyze();
-    setTimeout(() => window.print(), 200);
+      setResult(calculated);
+      setMessage(`Análisis generado con NASA POWER para ${locationLabel}. Distancia a red ingresada: ${gridDistance} km.`);
+      setTimeout(() => document.getElementById("resultados")?.scrollIntoView({ behavior: "smooth" }), 100);
+      return calculated;
+    } catch (error) {
+      const fallback = calculate(zone, technology, areaHa, price, lat, lon, devexPct, gridDistance);
+      setResult(fallback);
+      setMessage("No se pudo consultar NASA POWER. Se generó el análisis con estimación regional MVP. Reintenta o revisa conexión.");
+      setTimeout(() => document.getElementById("resultados")?.scrollIntoView({ behavior: "smooth" }), 100);
+      return fallback;
+    } finally {
+      setLoading(false);
+    }
   }
-  const locationLabel = `Coordenadas ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-  const techName = technology === "solar" ? "Solar FV" : "Eólico";
-  const capexUnit = technology === "solar" ? assumptions.solarCapex : assumptions.windCapex;
-  const opexPct = technology === "solar" ? assumptions.solarOpex : assumptions.windOpex;
-  const mwHa = technology === "solar" ? assumptions.solarMwHa : assumptions.windMwHa;
-  const resourceValue = technology === "solar" ? liveEstimate.adjustedGhi : liveEstimate.adjustedWind;
-  const resourceLabel = technology === "solar" ? "GHI ajustado" : "Viento ajustado";
-  const resourceUnit = technology === "solar" ? "kWh/m²/día" : "m/s";
+
+  async function printReport() {
+    if (!result) {
+      await analyze();
+    }
+    setTimeout(() => window.print(), 400);
+  }
 
   function scenario(priceMult: number, capexMult: number, fpMult: number) {
-    const base = calculate(zone, technology, areaHa, price * priceMult, lat, lon, devexPct);
+    const base = calculate(zone, technology, areaHa, price * priceMult, lat, lon, devexPct, gridDistance);
     const adjustedTechnicalCapex = (base.capexEquipment + base.interconnectionCapex) * capexMult;
     const adjustedDevex = adjustedTechnicalCapex * (devexPct / 100);
     const adjustedCapex = adjustedTechnicalCapex + adjustedDevex;
@@ -380,7 +493,7 @@ export default function Home() {
             <div className="h-11 w-11 rounded-2xl bg-emerald-600 flex items-center justify-center"><Zap className="text-white" /></div>
             <div>
               <h1 className="text-2xl font-bold">Energycom Nexus AI</h1>
-              <p className="text-sm text-slate-500">From Land to Power · MVP Perú · Interconexión con subestaciones</p>
+              <p className="text-sm text-slate-500">From Land to Power · MVP Perú · Interconexión editable con subestaciones</p>
             </div>
           </div>
           <button className="rounded-2xl bg-slate-900 text-white px-4 py-2 text-sm">Solicitar demo</button>
@@ -388,46 +501,45 @@ export default function Home() {
       </header>
 
       <section className="mx-auto max-w-7xl px-6 py-8 grid lg:grid-cols-[1.05fr_0.95fr] gap-6 print:hidden">
-        <div className="rounded-3xl bg-gradient-to-br from-emerald-100 via-sky-100 to-slate-200 min-h-[560px] p-5 relative overflow-hidden border border-slate-200">
+        <div className="rounded-3xl bg-gradient-to-br from-emerald-100 via-sky-100 to-slate-200 min-h-[700px] p-5 relative overflow-hidden border border-slate-200">
           <div className="absolute inset-0 opacity-70" style={{ backgroundImage: "radial-gradient(circle at 25% 30%, rgba(16,185,129,.32), transparent 25%), radial-gradient(circle at 65% 60%, rgba(14,165,233,.3), transparent 30%)" }} />
           <div className="relative z-10 flex items-center gap-3">
             <Globe2 className="text-emerald-700" />
-            <select className="rounded-2xl bg-white/90 px-4 py-3 shadow-sm flex-1 outline-none" value={locationLabel} onChange={(e) => selectZone(e.target.value)}>
+            <select className="rounded-2xl bg-white/90 px-4 py-3 shadow-sm flex-1 outline-none" value={zone.region} onChange={(e) => selectZone(e.target.value)}>
               {zones.map((z) => <option key={z.region} value={z.region}>{z.region} · {z.macro}</option>)}
             </select>
           </div>
 
           <div onClick={selectFromConceptMap} className="relative z-10 mt-8 mx-auto h-72 max-w-md rounded-[2rem] bg-white/55 border border-white shadow-inner cursor-crosshair overflow-hidden">
             <div className="absolute left-[42%] top-[8%] h-[82%] w-[34%] rounded-[50%_45%_55%_60%] bg-emerald-500/30 border-4 border-emerald-700 rotate-[8deg]" />
-            <div className="absolute text-xs text-slate-600 left-4 top-4">Mapa conceptual Perú<br/>Haz clic para seleccionar coordenadas</div>
+            <div className="absolute text-xs text-slate-600 left-4 top-4">Mapa conceptual Perú<br />Haz clic para seleccionar coordenadas</div>
             <MapPin className="absolute h-8 w-8 text-red-600 drop-shadow" style={{ left: `${((lon + 82) / 14) * 100}%`, top: `${((0.5 - lat) / 19) * 100}%`, transform: "translate(-50%, -100%)" }} />
             <div className="absolute bottom-3 left-3 right-3 rounded-2xl bg-white/90 p-3 text-xs">
               Coordenadas seleccionadas: <strong>{lat.toFixed(5)}, {lon.toFixed(5)}</strong>
             </div>
           </div>
 
+          <div className="relative z-10 mt-5 overflow-hidden rounded-3xl border bg-white/80 p-3 shadow-sm">
+            <div className="flex items-center gap-2 mb-2 text-sm font-semibold text-slate-700"><MapPin className="h-4 w-4 text-red-600" /> Mapa de ubicación referencial</div>
+            <img src={staticMapUrl(lat, lon)} alt="Mapa de ubicación" className="w-full rounded-2xl border" />
+          </div>
+
           <p className="relative z-10 mt-5 text-sm text-slate-700 bg-white/70 rounded-2xl p-4">{zone.note}</p>
           <div className="relative z-10 mt-4 grid grid-cols-3 gap-3">
             <div className="rounded-2xl bg-white/90 p-4"><p className="text-xs text-slate-500">GHI base</p><strong>{zone.ghi} kWh/m²/día</strong></div>
             <div className="rounded-2xl bg-white/90 p-4"><p className="text-xs text-slate-500">Viento base</p><strong>{zone.wind} m/s</strong></div>
-            <div className="rounded-2xl bg-white/90 p-4"><p className="text-xs text-slate-500">Red</p><strong>{zone.grid} km</strong></div>
+            <div className="rounded-2xl bg-white/90 p-4"><p className="text-xs text-slate-500">Red editable</p><strong>{gridDistance} km</strong></div>
           </div>
         </div>
 
         <div className="space-y-5">
           <div className="rounded-3xl bg-white p-6 shadow-sm border border-slate-200">
             <h2 className="text-xl font-bold">Análisis de prefactibilidad</h2>
-            <p className="text-sm text-slate-600 mt-2">Incluye coordenadas, potencial, EPC, línea, subestación, equipos eléctricos, gastos de desarrollo y permisos, LCOE, VAN, TIR, payback, riesgo y memoria de cálculo.</p>
+            <p className="text-sm text-slate-600 mt-2">Incluye coordenadas, potencial, EPC, línea, subestación, equipos eléctricos, gastos de desarrollo y permisos, VAN, TIR y LCOE.</p>
             <div className="mt-5 space-y-5">
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-sm font-medium">Latitud</label>
-                  <input className="mt-1 w-full rounded-2xl border p-3" type="number" step="0.00001" value={lat} onChange={(e) => { setLat(Number(e.target.value)); setResult(null); }} />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">Longitud</label>
-                  <input className="mt-1 w-full rounded-2xl border p-3" type="number" step="0.00001" value={lon} onChange={(e) => { setLon(Number(e.target.value)); setResult(null); }} />
-                </div>
+                <label className="text-sm font-medium">Latitud<input type="number" step="0.00001" value={lat} onChange={(e) => { setLat(Number(e.target.value)); setResult(null); }} className="mt-1 w-full rounded-xl border p-3" /></label>
+                <label className="text-sm font-medium">Longitud<input type="number" step="0.00001" value={lon} onChange={(e) => { setLon(Number(e.target.value)); setResult(null); }} className="mt-1 w-full rounded-xl border p-3" /></label>
               </div>
               <div>
                 <label className="font-medium">Área: {areaHa} ha</label>
@@ -442,15 +554,22 @@ export default function Home() {
                 <input className="w-full mt-2" type="range" min="25" max="90" value={price} onChange={(e) => { setPrice(Number(e.target.value)); setResult(null); }} />
               </div>
               <div>
+                <label className="font-medium">Distancia a red ingresada por el usuario: {gridDistance} km</label>
+                <input className="w-full mt-2" type="range" min="1" max="120" value={gridDistance} onChange={(e) => { setGridDistance(Number(e.target.value)); setResult(null); }} />
+                <input className="mt-2 w-full rounded-xl border p-3" type="number" min="0" value={gridDistance} onChange={(e) => { setGridDistance(Number(e.target.value)); setResult(null); }} />
+                <p className="text-xs text-slate-500 mt-1">Este valor alimenta el costo de línea, CAPEX de interconexión, CAPEX técnico, inversión inicial, VAN, TIR, LCOE y payback.</p>
+              </div>
+              <div>
                 <label className="font-medium">Gastos de desarrollo y permisos: {devexPct}% del CAPEX técnico</label>
                 <input className="w-full mt-2" type="range" min="3" max="15" value={devexPct} onChange={(e) => { setDevexPct(Number(e.target.value)); setResult(null); }} />
                 <p className="text-xs text-slate-500 mt-1">Se calculan aparte del CAPEX técnico: factibilidad, ingeniería, permisos, estudios de interconexión y gestión/desarrollo.</p>
               </div>
               <div className="rounded-2xl bg-slate-50 border p-4 text-sm">
-                Estimación previa: <strong>{num(liveEstimate.capacityMW)} MW</strong> · <strong>{num(liveEstimate.annualMWh, 0)} MWh/año</strong> · Inversión inicial <strong>{usd(liveEstimate.capexTotal)}</strong><br />Interconexión: <strong>{usd(liveEstimate.interconnectionCapex)}</strong> · Subestación: <strong>{usd(liveEstimate.substationCost)}</strong><br />
-                {resourceLabel}: <strong>{resourceValue.toFixed(2)} {resourceUnit}</strong>
+                Estimación previa: <strong>{num(liveEstimate.capacityMW)} MW</strong> · <strong>{num(liveEstimate.annualMWh, 0)} MWh/año</strong> · Inversión inicial <strong>{usd(liveEstimate.capexTotal)}</strong><br />
+                Interconexión: <strong>{usd(liveEstimate.interconnectionCapex)}</strong> · Línea: <strong>{usd(liveEstimate.lineCost)}</strong> · Subestación: <strong>{usd(liveEstimate.substationCost)}</strong><br />
+                {resourceLabel}: <strong>{resourceValue.toFixed(2)} {resourceUnit}</strong> · Distancia red: <strong>{gridDistance} km</strong>
               </div>
-              <button onClick={analyze} className="w-full rounded-2xl bg-slate-900 text-white py-3 font-semibold">Ejecutar análisis</button>
+              <button onClick={analyze} disabled={loading} className="w-full rounded-2xl bg-slate-900 text-white py-3 font-semibold disabled:opacity-60">{loading ? "Consultando NASA POWER..." : "Ejecutar análisis"}</button>
               <p className="text-sm text-slate-500">{message}</p>
             </div>
           </div>
@@ -462,15 +581,21 @@ export default function Home() {
           <div className="hidden print:block mb-8 border-b pb-5">
             <h1 className="text-3xl font-bold">Memoria de cálculo preliminar</h1>
             <p>Energycom Nexus AI · {locationLabel}, Perú · Proyecto {techName}</p>
-            <p>Coordenadas: {lat.toFixed(5)}, {lon.toFixed(5)} · Área: {areaHa} ha</p>
+            <p>Coordenadas: {lat.toFixed(5)}, {lon.toFixed(5)} · Área: {areaHa} ha · Distancia a red ingresada: {result.gridDistance} km</p>
           </div>
 
           <div className="flex items-start justify-between gap-4 print:block">
             <div>
               <h2 className="text-2xl font-bold">Resultados de prefactibilidad</h2>
-              <p className="text-slate-600">{locationLabel} · Coordenadas {lat.toFixed(5)}, {lon.toFixed(5)} · {areaHa} ha · Tecnología {techName}</p>
+              <p className="text-slate-600">{locationLabel} · {areaHa} ha · Tecnología {techName} · Distancia a red {result.gridDistance} km</p>
             </div>
             <button onClick={printReport} className="print:hidden rounded-2xl bg-emerald-600 text-white px-4 py-3 font-semibold flex items-center gap-2"><Download className="h-4" /> Generar memoria PDF</button>
+          </div>
+
+          <div className="rounded-3xl bg-white p-6 shadow-sm border border-slate-200">
+            <h3 className="text-xl font-bold mb-3">Mapa e imagen de ubicación</h3>
+            <img src={staticMapUrl(lat, lon)} alt="Mapa de ubicación" className="w-full max-w-3xl rounded-2xl border" />
+            <p className="mt-2 text-sm text-slate-600">Ubicación referencial por coordenadas: {lat.toFixed(5)}, {lon.toFixed(5)}. La selección precisa de polígono se implementará en la fase de mapa real GIS.</p>
           </div>
 
           <div className="grid md:grid-cols-4 gap-4">
@@ -482,7 +607,7 @@ export default function Home() {
           <div className="grid md:grid-cols-4 gap-4">
             <Card icon={DollarSign} title="Ingresos" value={usd(result.revenueAnnual)} subtitle="anual estimado" />
             <Card icon={Building2} title="OPEX" value={usd(result.opexAnnual)} subtitle="anual estimado" />
-            <Card icon={Zap} title="Interconexión" value={usd(result.interconnectionCapex)} subtitle="línea + subestación + equipos" />
+            <Card icon={Zap} title="Interconexión" value={usd(result.interconnectionCapex)} subtitle={`línea ${result.gridDistance} km + subestación + equipos`} />
             <Card icon={Scale} title="Gastos desarrollo" value={usd(result.devexTotal)} subtitle={`${devexPct}% del CAPEX técnico`} />
             <Card icon={FileText} title="LCOE" value={`$${result.lcoe.toFixed(1)}/MWh`} subtitle="estimado" />
             <Card icon={Landmark} title="VAN" value={usd(result.npv)} subtitle="10% descuento" />
@@ -495,6 +620,15 @@ export default function Home() {
           </div>
 
           <div className="rounded-3xl bg-white p-6 shadow-sm border border-slate-200">
+            <h3 className="text-xl font-bold mb-4">Fuente de datos de recurso</h3>
+            <ul className="text-sm space-y-2 list-disc pl-5">
+              <li><strong>Recurso solar:</strong> {result.dataSource.includes("NASA") ? "NASA POWER, parámetro ALLSKY_SFC_SW_DWN, promedio climatológico de largo plazo." : "Estimación regional MVP."}</li>
+              <li><strong>Recurso eólico:</strong> estimación regional MVP Perú. En fase backend debe reemplazarse por Global Wind Atlas / GIS raster o campaña de medición.</li>
+              <li><strong>Advertencia:</strong> los datos son preliminares y deben validarse con recurso horario, medición, ingeniería e interconexión.</li>
+            </ul>
+          </div>
+
+          <div className="rounded-3xl bg-white p-6 shadow-sm border border-slate-200">
             <h3 className="text-xl font-bold mb-4">Memoria de cálculo detallada</h3>
             <div className="overflow-x-auto">
               <table className="w-full text-sm border-collapse">
@@ -502,12 +636,12 @@ export default function Home() {
                   <tr><th className="p-3 text-left">Proceso</th><th className="p-3 text-left">Fórmula</th><th className="p-3 text-left">Cálculo aplicado</th><th className="p-3 text-left">Resultado</th></tr>
                 </thead>
                 <tbody>
-                  <DetailRow label="Recurso ajustado" formula={technology === "solar" ? "GHI_adj = GHI_base × f(lat,lon)" : "V_adj = V_base × f(lat,lon)"} calculation={technology === "solar" ? `${zone.ghi} × ajuste coordenadas` : `${zone.wind} × ajuste coordenadas`} result={`${resourceValue.toFixed(2)} ${resourceUnit}`} />
+                  <DetailRow label="Recurso" formula={technology === "solar" ? "GHI = NASA POWER ALLSKY_SFC_SW_DWN" : "Viento = estimación regional MVP"} calculation={technology === "solar" ? `${result.adjustedGhi.toFixed(2)} kWh/m²/día` : `${result.adjustedWind.toFixed(2)} m/s`} result={`${resourceValue.toFixed(2)} ${resourceUnit}`} />
                   <DetailRow label="Potencia instalable" formula="P_inst = Área × densidad MW/ha" calculation={`${areaHa} ha × ${mwHa} MW/ha`} result={`${num(result.capacityMW)} MW`} />
-                  <DetailRow label="Factor de planta" formula={technology === "solar" ? "FP = GHI_adj / 24, acotado 17%–31%" : "FP = (V_adj - 3) / 10, acotado 18%–46%"} calculation={technology === "solar" ? `${result.adjustedGhi.toFixed(2)} / 24` : `(${result.adjustedWind.toFixed(2)} - 3) / 10`} result={`${(result.factorPlant * 100).toFixed(2)}%`} />
+                  <DetailRow label="Factor de planta" formula={technology === "solar" ? "FP = GHI / 24, acotado 18%–30%" : "FP = (V - 3) / 10, acotado 20%–45%"} calculation={technology === "solar" ? `${result.adjustedGhi.toFixed(2)} / 24` : `(${result.adjustedWind.toFixed(2)} - 3) / 10`} result={`${(result.factorPlant * 100).toFixed(2)}%`} />
                   <DetailRow label="Producción anual" formula="E = P_inst × FP × 8,760" calculation={`${num(result.capacityMW)} × ${(result.factorPlant * 100).toFixed(2)}% × 8,760`} result={`${num(result.annualMWh, 0)} MWh/año`} />
                   <DetailRow label="CAPEX equipos/EPC" formula="CAPEX_EPC = P_inst × CAPEX_unitario" calculation={`${num(result.capacityMW)} MW × ${usdFull(capexUnit)}/MW`} result={usdFull(result.capexEquipment)} />
-                  <DetailRow label="Costo de línea de conexión" formula="C_línea = distancia × USD/km" calculation={`${zone.grid} km × ${usdFull(assumptions.connectionUsdKm)}/km`} result={usdFull(result.lineCost)} />
+                  <DetailRow label="Costo de línea de conexión" formula="C_línea = distancia ingresada × USD/km" calculation={`${result.gridDistance} km × ${usdFull(assumptions.connectionUsdKm)}/km`} result={usdFull(result.lineCost)} />
                   <DetailRow label="Costo de subestación" formula="C_subestación = f(MW, nivel de tensión)" calculation={`Tipo ${getSubstationType(result.capacityMW)} para ${num(result.capacityMW)} MW`} result={usdFull(result.substationCost)} />
                   <DetailRow label="Equipos eléctricos" formula="C_equipos = 15% × (C_línea + C_subestación)" calculation={`15% × (${usdFull(result.lineCost)} + ${usdFull(result.substationCost)})`} result={usdFull(result.electricalEquipmentCost)} />
                   <DetailRow label="CAPEX interconexión" formula="CAPEX_interconexión = C_línea + C_subestación + C_equipos" calculation={`${usdFull(result.lineCost)} + ${usdFull(result.substationCost)} + ${usdFull(result.electricalEquipmentCost)}`} result={usdFull(result.interconnectionCapex)} />
@@ -528,12 +662,12 @@ export default function Home() {
 
           <div className="rounded-3xl bg-white p-6 shadow-sm border border-slate-200">
             <h3 className="text-xl font-bold mb-4">Interconexión eléctrica: línea, subestación y equipos</h3>
-            <p className="text-sm text-slate-600 mb-4">La interconexión se considera dentro del CAPEX técnico del proyecto. Incluye línea de conexión, subestación eléctrica y equipamiento eléctrico asociado.</p>
+            <p className="text-sm text-slate-600 mb-4">La interconexión se considera dentro del CAPEX técnico del proyecto. La distancia a red es un input ingresado por el usuario y alimenta automáticamente la línea, el CAPEX de interconexión y los indicadores financieros.</p>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-slate-100"><tr><th className="p-3 text-left">Componente</th><th className="p-3 text-left">Supuesto</th><th className="p-3 text-right">USD</th></tr></thead>
                 <tbody>
-                  <tr className="border-b"><td className="p-3 font-medium">Línea de conexión</td><td className="p-3">{zone.grid} km × {usdFull(assumptions.connectionUsdKm)}/km</td><td className="p-3 text-right">{usdFull(result.lineCost)}</td></tr>
+                  <tr className="border-b"><td className="p-3 font-medium">Línea de conexión</td><td className="p-3">Distancia ingresada: {result.gridDistance} km × {usdFull(assumptions.connectionUsdKm)}/km</td><td className="p-3 text-right">{usdFull(result.lineCost)}</td></tr>
                   <tr className="border-b"><td className="p-3 font-medium">Subestación eléctrica</td><td className="p-3">Tipo {getSubstationType(result.capacityMW)} según potencia estimada</td><td className="p-3 text-right">{usdFull(result.substationCost)}</td></tr>
                   <tr className="border-b"><td className="p-3 font-medium">Equipos eléctricos</td><td className="p-3">Protecciones, transformadores, switchgear y sistemas auxiliares: {(assumptions.electricalEquipmentPct * 100).toFixed(0)}% de línea + subestación</td><td className="p-3 text-right">{usdFull(result.electricalEquipmentCost)}</td></tr>
                   <tr className="bg-slate-50 font-bold"><td className="p-3">Total CAPEX interconexión</td><td className="p-3">Línea + subestación + equipos</td><td className="p-3 text-right">{usdFull(result.interconnectionCapex)}</td></tr>
@@ -570,6 +704,7 @@ export default function Home() {
                 <li>OPEX anual: {(opexPct * 100).toFixed(1)}% del CAPEX técnico.</li>
                 <li>Vida útil: {assumptions.lifeYears} años.</li>
                 <li>Tasa de descuento: {(assumptions.discountRate * 100).toFixed(1)}%.</li>
+                <li>Distancia a red ingresada por el usuario: {result.gridDistance} km.</li>
                 <li>Costo preliminar de línea de conexión: {usdFull(assumptions.connectionUsdKm)}/km.</li>
                 <li>Subestación eléctrica estimada automáticamente por tamaño del proyecto: {getSubstationType(result.capacityMW)} = {usdFull(result.substationCost)}.</li>
                 <li>Equipos eléctricos: {(assumptions.electricalEquipmentPct * 100).toFixed(0)}% de línea + subestación.</li>
@@ -606,7 +741,7 @@ export default function Home() {
           <div className="rounded-3xl bg-white p-6 shadow-sm border border-slate-200">
             <h3 className="text-xl font-bold">Conclusión preliminar</h3>
             <p className="mt-3 text-slate-700">
-              El terreno evaluado presenta un nivel de riesgo preliminar <strong>{result.riskLevel}</strong> para un proyecto {techName}. La oportunidad debe continuar a validación con recurso horario, visita de campo, cotización EPC, ingeniería de subestación, análisis de conexión, revisión de propiedad, concesiones, servidumbres, permisos, evaluación ambiental y presupuesto detallado de gastos de desarrollo y permisos por etapa.
+              El terreno evaluado presenta un nivel de riesgo preliminar <strong>{result.riskLevel}</strong> para un proyecto {techName}. Bajo los supuestos actuales, se debe revisar especialmente precio PPA, CAPEX técnico, distancia de interconexión, factor de planta y gastos de desarrollo. La oportunidad debe continuar a validación con recurso horario, visita de campo, cotización EPC, ingeniería de subestación, análisis de conexión, revisión de propiedad, concesiones, servidumbres, permisos, evaluación ambiental y presupuesto detallado por etapa.
             </p>
           </div>
 
