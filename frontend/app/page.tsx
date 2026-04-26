@@ -334,14 +334,14 @@ export default function Home() {
   );
 
   setResult(calculated);
-  setMessage(`Análisis generado con NASA POWER para ${zone.region} (${lat.toFixed(5)}, ${lon.toFixed(5)}).`);
+  setMessage(`Análisis generado con NASA POWER para ${locationLabel} (${lat.toFixed(5)}, ${lon.toFixed(5)}).`);
   setTimeout(() => document.getElementById("resultados")?.scrollIntoView({ behavior: "smooth" }), 100);
 }
   function printReport() {
     if (!result) analyze();
     setTimeout(() => window.print(), 200);
   }
-
+  const locationLabel = `Coordenadas ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const techName = technology === "solar" ? "Solar FV" : "Eólico";
   const capexUnit = technology === "solar" ? assumptions.solarCapex : assumptions.windCapex;
   const opexPct = technology === "solar" ? assumptions.solarOpex : assumptions.windOpex;
@@ -392,7 +392,7 @@ export default function Home() {
           <div className="absolute inset-0 opacity-70" style={{ backgroundImage: "radial-gradient(circle at 25% 30%, rgba(16,185,129,.32), transparent 25%), radial-gradient(circle at 65% 60%, rgba(14,165,233,.3), transparent 30%)" }} />
           <div className="relative z-10 flex items-center gap-3">
             <Globe2 className="text-emerald-700" />
-            <select className="rounded-2xl bg-white/90 px-4 py-3 shadow-sm flex-1 outline-none" value={zone.region} onChange={(e) => selectZone(e.target.value)}>
+            <select className="rounded-2xl bg-white/90 px-4 py-3 shadow-sm flex-1 outline-none" value={locationLabel} onChange={(e) => selectZone(e.target.value)}>
               {zones.map((z) => <option key={z.region} value={z.region}>{z.region} · {z.macro}</option>)}
             </select>
           </div>
@@ -461,14 +461,14 @@ export default function Home() {
         <section id="resultados" className="mx-auto max-w-7xl px-6 pb-10 space-y-6 print:px-8 print:py-8">
           <div className="hidden print:block mb-8 border-b pb-5">
             <h1 className="text-3xl font-bold">Memoria de cálculo preliminar</h1>
-            <p>Energycom Nexus AI · {zone.region}, Perú · Proyecto {techName}</p>
+            <p>Energycom Nexus AI · {locationLabel}, Perú · Proyecto {techName}</p>
             <p>Coordenadas: {lat.toFixed(5)}, {lon.toFixed(5)} · Área: {areaHa} ha</p>
           </div>
 
           <div className="flex items-start justify-between gap-4 print:block">
             <div>
               <h2 className="text-2xl font-bold">Resultados de prefactibilidad</h2>
-              <p className="text-slate-600">{zone.region} · Coordenadas {lat.toFixed(5)}, {lon.toFixed(5)} · {areaHa} ha · Tecnología {techName}</p>
+              <p className="text-slate-600">{locationLabel} · Coordenadas {lat.toFixed(5)}, {lon.toFixed(5)} · {areaHa} ha · Tecnología {techName}</p>
             </div>
             <button onClick={printReport} className="print:hidden rounded-2xl bg-emerald-600 text-white px-4 py-3 font-semibold flex items-center gap-2"><Download className="h-4" /> Generar memoria PDF</button>
           </div>
