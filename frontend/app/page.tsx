@@ -1,3 +1,38 @@
+async function getNASAResourceData(lat, lon) {
+  const url =
+    `https://power.larc.nasa.gov/api/temporal/climatology/point` +
+    `?parameters=ALLSKY_SFC_SW_DWN` +
+    `&community=RE` +
+    `&longitude=${lon}` +
+    `&latitude=${lat}` +
+    `&format=JSON`;
+
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error("No se pudo obtener información de NASA POWER");
+  }
+
+  const data = await response.json();
+
+  const ghi =
+    data?.properties?.parameter?.ALLSKY_SFC_SW_DWN?.ANN ||
+    data?.properties?.parameter?.ALLSKY_SFC_SW_DWN?.annual;
+
+  return {
+    ghi: Number(ghi),
+    source: "NASA POWER - ALLSKY_SFC_SW_DWN",
+  };
+}
+function estimateWindSpeedPeru(lat, lon) {
+  // Modelo preliminar para MVP Perú.
+  // Luego será reemplazado por Global Wind Atlas vía backend GIS.
+
+  if (lat > -7) return 7.4;      // norte: Piura, Lambayeque
+  if (lat > -12) return 6.3;     // centro
+  if (lat > -16) return 6.0;     // sur medio
+  return 6.4;                    // sur: Arequipa, Moquegua, Tacna
+}
 "use client";
 
 import { useMemo, useState } from "react";
