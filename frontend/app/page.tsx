@@ -127,7 +127,7 @@ const zones: Zone[] = [
   { region: "Amazonas", macro: "Nororiente", ghi: 4.7, wind: 4.1, grid: 38, legal: 42, climate: 48, lat: -6.23, lon: -77.87, note: "Zona con recurso solar medio y alta sensibilidad ambiental." },
   { region: "Áncash", macro: "Costa/Sierra centro", ghi: 5.5, wind: 5.8, grid: 22, legal: 38, climate: 34, lat: -9.53, lon: -77.53, note: "Potencial solar medio-alto y oportunidades cerca de corredores eléctricos." },
   { region: "Apurímac", macro: "Sierra sur", ghi: 5.7, wind: 5.1, grid: 34, legal: 45, climate: 36, lat: -13.63, lon: -72.88, note: "Recurso solar alto, revisar acceso y restricciones territoriales." },
-  { region: "Arequipa", macro: "Sur", ghi: 6.2, wind: 6.8, grid: 18, legal: 35, climate: 28, lat: -16.41, lon: -71.54, note: "Alto recurso solar y buen potencial para proyectos utility-scale." },
+  { region: "Arequipa", macro: "Sur", ghi: 6.2, wind: 6.8, grid: 9, legal: 35, climate: 28, lat: -16.41, lon: -71.54, note: "Alto recurso solar y buen potencial para proyectos utility-scale." },
   { region: "Ayacucho", macro: "Sierra sur", ghi: 5.8, wind: 5.4, grid: 36, legal: 44, climate: 38, lat: -13.16, lon: -74.22, note: "Buen recurso solar, requiere revisión de accesibilidad y red." },
   { region: "Cajamarca", macro: "Norte", ghi: 5.0, wind: 4.8, grid: 30, legal: 48, climate: 42, lat: -7.16, lon: -78.51, note: "Recurso medio, revisar interacción con concesiones y áreas sensibles." },
   { region: "Callao", macro: "Costa centro", ghi: 5.1, wind: 5.2, grid: 8, legal: 55, climate: 30, lat: -12.06, lon: -77.12, note: "Alta cercanía a red, limitada disponibilidad de suelo." },
@@ -400,12 +400,12 @@ function DetailRow({ label, formula, calculation, result }: { label: string; for
 export default function Home() {
   const [technology, setTechnology] = useState("solar");
   const [areaHa, setAreaHa] = useState(120);
-  const [price, setPrice] = useState(52);
-  const [devexPct, setDevexPct] = useState(7);
+  const [price, setPrice] = useState(55);
+  const [devexPct, setDevexPct] = useState(6);
   const [zone, setZone] = useState<Zone>(zones.find((z) => z.region === "Arequipa") || zones[0]);
   const [lat, setLat] = useState(-16.41);
   const [lon, setLon] = useState(-71.54);
-  const [gridDistance, setGridDistance] = useState(18);
+  const [gridDistance, setGridDistance] = useState(9);
   const [result, setResult] = useState<Result | null>(null);
   const [message, setMessage] = useState("Selecciona un departamento. El mapa se centrará en esa zona; afina coordenadas y distancia a red antes de ejecutar el análisis.");
   const [loading, setLoading] = useState(false);
@@ -550,7 +550,7 @@ export default function Home() {
 
           <div className="relative z-10 mt-5 overflow-hidden rounded-3xl border bg-white/80 p-3 shadow-sm">
             <div className="flex items-center gap-2 mb-2 text-sm font-semibold text-slate-700"><MapPin className="h-4 w-4 text-red-600" /> Mapa de ubicación referencial</div>
-            <img src={staticMapUrl(lat, lon, zone.region)} alt="Mapa de ubicación" className="w-full rounded-2xl border" />
+            <div className="w-full rounded-2xl border overflow-hidden" dangerouslySetInnerHTML={{ __html: decodeURIComponent(staticMapUrl(lat, lon, zone.region).replace("data:image/svg+xml;utf8,", "")) }} />
           </div>
 
           <p className="relative z-10 mt-5 text-sm text-slate-700 bg-white/70 rounded-2xl p-4">{zone.note}</p>
@@ -624,7 +624,7 @@ export default function Home() {
 
           <div className="rounded-3xl bg-white p-6 shadow-sm border border-slate-200">
             <h3 className="text-xl font-bold mb-3">Mapa e imagen de ubicación</h3>
-            <img src={staticMapUrl(lat, lon, zone.region)} alt="Mapa de ubicación" className="w-full max-w-3xl rounded-2xl border" />
+            <div className="w-full max-w-3xl rounded-2xl border overflow-hidden" dangerouslySetInnerHTML={{ __html: decodeURIComponent(staticMapUrl(lat, lon, zone.region).replace("data:image/svg+xml;utf8,", "")) }} />
             <p className="mt-2 text-sm text-slate-600">Ubicación referencial por coordenadas: {lat.toFixed(5)}, {lon.toFixed(5)}. La selección precisa de polígono se implementará en la fase de mapa real GIS.</p>
           </div>
 
