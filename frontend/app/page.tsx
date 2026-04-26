@@ -198,16 +198,18 @@ function getAdjustedResource(zone: Zone, lat: number, lon: number) {
   return { adjustedGhi, adjustedWind };
 }
 
-  function calculate(zone, technology, areaHa, price, lat, lon, devexPct, ghiReal, windSpeedReal, solarCF, windCF) {
+  function calculate(zone: Zone, technology: string, areaHa: number, price: number, lat: number, lon: number, devexPct: number, ghiReal?: number, windSpeedReal?: number, solarCF?: number, windCF?: number): Result {
   const isSolar = technology === "solar";
-  const { adjustedGhi, adjustedWind } = getAdjustedResource(zone, lat, lon);
+  const estimatedResource = getAdjustedResource(zone, lat, lon);
+  const adjustedGhi = ghiReal ?? estimatedResource.adjustedGhi;
+  const adjustedWind = windSpeedReal ?? estimatedResource.adjustedWind;
   const mwPerHa = isSolar ? assumptions.solarMwHa : assumptions.windMwHa;
   const capexUnit = isSolar ? assumptions.solarCapex : assumptions.windCapex;
   const opexPct = isSolar ? assumptions.solarOpex : assumptions.windOpex;
   const capacityMW = areaHa * mwPerHa;
   const factorPlant = isSolar
-    ? Math.min(0.31, Math.max(0.17, adjustedGhi / 24))
-    : Math.min(0.46, Math.max(0.18, (adjustedWind - 3) / 10));
+  ? (solarCF ?? Math.min(0.31, Math.max(0.17, adjustedGhi / 24)))
+  : (windCF ?? Math.min(0.46, Math.max(0.18, (adjustedWind - 3) / 10)));
   const annualMWh = capacityMW * factorPlant * 8760;
   const lineCost = zone.grid * assumptions.connectionUsdKm;
   const substationCost = estimateSubstationCost(capacityMW);
@@ -309,8 +311,6 @@ export default function Home() {
   }
 
   async function analyze() {
-
-  // 🔌 1. DATOS REALES
   const nasaData = await getNASAResourceData(lat, lon);
   const ghiReal = nasaData.ghi;
 
@@ -319,24 +319,23 @@ export default function Home() {
   const solarCF = getSolarCapacityFactor(ghiReal);
   const windCF = getWindCapacityFactor(windSpeedReal);
 
-  // ⚙️ 2. CÁLCULO ORIGINAL
-  const calculated = calculate(zone, technology, areaHa, price, lat, lon, devexPct);
-
-  // 🔥 3. SOBREESCRIBIR RESULTADOS (CLAVE)
-  calculated.ghi = ghiReal;
-  calculated.windSpeed = windSpeedReal;
-  calculated.factorPlant =
-    technology === "solar" ? solarCF : windCF;
-
-  // 💾 4. GUARDAR RESULTADO
-  setResult(calculated);
-
-  setMessage(`Análisis generado para ${zone.region} (${lat.toFixed(5)}, ${lon.toFixed(5)}).`);
-
-  setTimeout(() =>
-    document.getElementById("resultados")?.scrollIntoView({ behavior: "smooth" }),
-    100
+  const calculated = calculate(
+    zone,
+    technology,
+    areaHa,
+    price,
+    lat,
+    lon,
+    devexPct,
+    ghiReal,
+    windSpeedReal,
+    solarCF,
+    windCF
   );
+
+  setResult(calculated);
+  setMessage(`Análisis generado con NASA POWER para ${zone.region} (${lat.toFixed(5)}, ${lon.toFixed(5)}).`);
+  setTimeout(() => document.getElementById("resultados")?.scrollIntoView({ behavior: "smooth" }), 100);
 }
   function printReport() {
     if (!result) analyze();
